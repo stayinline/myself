@@ -269,20 +269,13 @@ Phase 2: keyBy(originalKey)             Phase 2: groupBy(original_key)
 ### 陷阱一：盲目调大 Executor 内存
 
 ```
-❌ 错误做法：
-  看到 OOM 就加大 spark.executor.memory
-  → 如果是 Shuffle 倾斜导致的 OOM，加内存只是推迟崩溃
-  → 如果是 User Memory 区域溢出，加 heap 也没用（fraction 限制了可用空间）
+❌ 看到 OOM 就加大 executor.memory → 倾斜导致的 OOM 加内存只是推迟崩溃
 
-✅ 正确思路：
-  1. 先看 Spark UI → Executors Tab → 哪个 Task OOM
-  2. 看 GC Time 占比 → 高则说明内存紧张
-  3. 看 Shuffle Spill → 有 spill 说明 Execution Memory 不够
-  4. 区分 OOM 类型：
-     - Java heap space → 增大 executor.memory 或增加分区数
-     - Metaspace → 增大 extraJavaOptions MaxMetaspaceSize
-     - Container killed → 增大 memoryOverhead
-     - GC overhead → 增大内存 + G1GC + 增加分区
+✅ 正确思路：UI 定位 → 区分 OOM 类型 → 针对性处理
+   • Java heap space → 增大 memory 或增加分区数
+   • Metaspace → 增大 MaxMetaspaceSize
+   • Container killed → 增大 memoryOverhead
+   • GC overhead → 增大内存 + G1GC + 增加分区
 ```
 
 ### 陷阱二：AQE 默认开启后的行为变化
@@ -295,13 +288,7 @@ Spark 3.2+ AQE 默认开启，带来三个容易忽视的变化：
 | **Join 策略被切换** | AQE 运行时发现表比预估小，自动从 SortMerge 切到 Broadcast | 你以为走了 SortMerge 做了 salting 优化，结果 AQE 切了 Broadcast，salting 白做 |
 | **倾斜自动处理** | AQE 检测到倾斜分区会自动拆分 | 你手动加了盐，AQE 又拆了一次，反而增加了 Shuffle 开销 |
 
-```
-✅ 应对策略：
-  1. 生产环境保持 AQE 开启（利大于弊）
-  2. 写文件前需要精确控制分区数 → 临时关闭 AQE 或用 coalesce
-  3. 手动优化前先确认 AQE 是否已经解决了问题
-  4. 看 Spark UI SQL Tab 中的 AQE 标记，确认实际执行计划
-```
+> ✅ 应对：生产保持 AQE 开启；写文件需精确分区数时临时关闭或用 coalesce；手动优化前先确认 AQE 是否已解决；看 UI SQL Tab 确认实际计划。
 
 ### 其他陷阱速查
 

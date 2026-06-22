@@ -262,7 +262,7 @@ Map Task 输出记录
 | SortShuffleManager | ≥ 1.2 | 先排序再写，减少文件数 | ✅ 默认 |
 | Tungsten-Sort | ≥ 1.5 | 在序列化二进制上排序，避免反序列化 | ✅ 自动启用 |
 
-**Bypass Merge Sort**：当分区数 ≤ `spark.shuffle.sort.bypassMergeThreshold`（默认 200）且无 map-side combine 时，跳过排序直接写 Hash 分区文件——省排序开销但产生更多小文件。
+**Bypass Merge Sort**：分区数 ≤ `bypassMergeThreshold`(200) 且无 map-side combine 时跳过排序，省开销但多小文件。
 
 ### ③ 数据倾斜在 Shuffle 阶段爆发
 
@@ -375,10 +375,7 @@ Stage 1 Summary Metrics:
 | 信号 | UI Stage 详情 Max/Median > 10x；Shuffle Read 分布极端不均 |
 | 对策 | ① AQE Skew Join（Spark 3.x 首选）；② Salting 加盐打散热点 key；③ 两阶段聚合 |
 
-#### 踩坑
-
-- 盲目增大 `shuffle.partitions` 只能缓解轻度倾斜，热点 key 仍在同一分区。
-- `groupByKey` 换成 `reduceByKey` 能减少 Shuffle 量但不解决倾斜本身。
+> **踩坑**：盲目增大 `shuffle.partitions` 只缓解轻度倾斜；`reduceByKey` 减少 Shuffle 量但不解决倾斜本身。
 
 ---
 
@@ -404,10 +401,7 @@ Job 总时长 35min，其中 Shuffle 占 28min（80%）
 | 信号 | SQL Tab 看到 `SortMergeJoin` 而非 `BroadcastHashJoin` |
 | 对策 | 调 `spark.sql.autoBroadcastJoinThreshold=50MB` 让维表走 Broadcast；或手动 `broadcast()` hint |
 
-#### 踩坑
-
-- Broadcast 变量太大会撑爆 Driver 内存 → 确认维表压缩后大小在阈值内。
-- 生产环境建议显式 `broadcast()` 而非依赖自动判断，避免执行计划不稳定。
+> **踩坑**：Broadcast 太大撑爆 Driver 内存；生产建议显式 `broadcast()` hint 避免执行计划不稳定。
 
 ---
 
@@ -432,10 +426,7 @@ Task 失败重试也要回溯 30 层 lineage → 恢复极慢
 | 信号 | StackOverflowError；Task 重试耗时逐轮递增 |
 | 对策 | 每 N 轮做一次 `rdd.checkpoint()` 截断 lineage；配合 `cache()` 避免重复计算 |
 
-#### 踩坑
-
-- `cache()` 不等于 `checkpoint()`：cache 不截断 lineage，Executor 挂了仍需重算整条链。
-- checkpoint 写入 HDFS 有开销，不要每轮都做，通常 5~10 轮一次。
+> **踩坑**：`cache()` ≠ `checkpoint()`——cache 不截断 lineage；checkpoint 写 HDFS 有开销，通常 5~10 轮做一次。
 
 ---
 
