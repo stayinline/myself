@@ -1,5 +1,6 @@
 # Hive 数仓基础 — 学习指南（D26 · L2）
 
+> 📚 本模块：**学习指南（本文）** · [原理](原理.md) · [实战](实战.md)  
 > 配套练习：Spark + enableHiveSupport 建分区表、写入、查询  
 > 前置知识：HDFS 基本操作、SQL 基础  
 > 对标：Flink Checkpoint / Spark 概览同一风格，由浅入深
@@ -66,7 +67,7 @@ spark = SparkSession.builder.enableHiveSupport() \
 | **创建语法** | `CREATE TABLE` | `CREATE EXTERNAL TABLE` |
 | **DROP 行为** | 删元数据 **+ 删数据** | 只删元数据，**保留数据** |
 | **典型用途** | ETL 中间表、临时表 | ODS 原始数据、共享数据 |
-| **ACID** | 支持（需配置） | 不支持 |
+| **ACID** | 支持（需 `TBLPROPERTIES('transactional'='true')` 等配置） | 默认不支持（Hive 3+ 可配事务外部表，生产少见） |
 
 ```
 选择决策树：
@@ -103,12 +104,12 @@ ETL 中间产物 → Managed（可重建）
 |------|------|------|
 | 组织粒度 | 目录 | 文件 |
 | 数量 | 动态增长 | 固定 |
-| 裁剪 | ✅ WHERE dt='xxx' | ❌ 不能直接过滤 |
+| 裁剪 | ✅ WHERE dt='xxx' | ⚠️ 仅对分桶列等值条件触发桶裁剪 |
 | Join 优化 | 无 | Bucket Map Join |
 | 适用列 | 低基数（日期、地域） | 高基数（user_id） |
 | NameNode 压力 | 分区过多时大 | 无额外压力 |
 
-> **记忆口诀**：**分区切目录，裁剪靠 WHERE；分桶哈希定文件，Join 采样显身手**。
+> **记忆口诀**：**分区切目录，裁剪靠 WHERE；分桶哈希定文件，Join 优化显身手**。
 
 ### ④ 存储格式：ORC vs Parquet
 
@@ -126,7 +127,7 @@ SELECT age WHERE city='BJ'         └──────────────
 | 维度 | ORC | Parquet |
 |------|-----|---------|
 | **生态偏向** | Hive/Spark | Spark/Presto/Flink/Iceberg |
-| **索引** | Bloom Filter + Row Index | Min/Max + Bloom Filter |
+| **索引** | Bloom Filter + Min/Max + Row Index | Min/Max + Bloom Filter |
 | **嵌套类型** | 支持但复杂 | Dremel 编码更高效 |
 | **社区趋势** | Hive 生态维护 | **更广泛采用（湖表默认）** |
 
@@ -234,7 +235,7 @@ ADS  ← 报表/Dashboard/API          ← Presto/Spark
 DWS  ← 汇总宽表/指标表             ← Spark/Presto
 DWD  ← 清洗后事实表                ← Spark
 DIM  ← 用户/课程维表               ← Spark/Hive
-ODS  ← 原始数据镜像(External)      ← Flink CDC/Sqoop
+ODS  ← 原始数据镜像(External)      ← Flink/Sqoop/DataX
 ```
 
 ### ② Hive vs 现代引擎
@@ -282,17 +283,17 @@ ODS  ← 原始数据镜像(External)      ← Flink CDC/Sqoop
 | `WHERE dt = '2024-06-01'` | ✅ | — |
 | `WHERE dt BETWEEN '...' AND '...'` | ✅ | — |
 | `WHERE substr(dt,1,7) = '2024-06'` | ❌ | `dt >= '2024-06-01' AND dt < '2024-07-01'` |
-| `WHERE dt = 20240601`（STRING列） | ❌ | `WHERE dt = '20240601'` |
+| `WHERE dt = 20240601`（STRING 列，无引号触发隐式转换） | ❌ | `WHERE dt = '2024-06-01'` |
 
 ### 动态分区小文件治理
 
 ```sql
--- 问题：100 Reducer × 30 分区 = 3000 小文件
--- 解决：DISTRIBUTE BY 让同分区到同一 Reducer
+-- 问题：100 Reducer × 30 分区 = 3000 小文件（每个 Reducer 向每个分区各写一个文件）
+-- 解决：DISTRIBUTE BY 让同一分区的数据路由到同一 Reducer
 INSERT OVERWRITE TABLE target PARTITION(dt)
 SELECT col1, col2, dt FROM source
 DISTRIBUTE BY dt SORT BY dt, col1;
--- 效果：30 Reducer × 30 分区 = 最多 900 文件
+-- 效果：每个分区约 1 个文件 → 共约 30 个文件（而非 900）
 ```
 
 > **记忆口诀**：**分区莫套函，类型要对齐；动分加 DISTRIBUTE，统计别忘记**。
@@ -328,7 +329,7 @@ DISTRIBUTE BY dt SORT BY dt, col1;
 
 #### 业务背景
 
-教务系统每天产出 2 亿条心跳日志，Flink CDC 写入 HDFS。ODS 作为原始镜像，误 DROP 恢复成本极高。
+教务系统每天产出 2 亿条心跳日志，Flink 消费 Kafka 写入 HDFS。ODS 作为原始镜像，误 DROP 恢复成本极高。
 
 #### 三要素
 
@@ -339,7 +340,7 @@ DISTRIBUTE BY dt SORT BY dt, col1;
 | 对策 | ODS 一律 **EXTERNAL TABLE**；DROP 只删元数据，文件保留可重新注册 |
 
 ```
-App 心跳 → Kafka → Flink CDC → HDFS
+App 心跳 → Kafka → Flink → HDFS
                                 ↓
                    CREATE EXTERNAL TABLE ... LOCATION '...'
 ```
@@ -354,7 +355,7 @@ App 心跳 → Kafka → Flink CDC → HDFS
 
 | 维度 | 分析 |
 |------|------|
-| 根因 | `date_format(event_time,'yyyy-MM')` 包裹分区列，裁剪失效 |
+| 根因 | 用 `date_format(event_time,'yyyy-MM')` 过滤，未直写分区列 `dt`，裁剪失效 |
 | 信号 | EXPLAIN 显示扫描 365 个分区而非目标 30 个 |
 | 对策 | 改写 `WHERE dt >= '2024-06-01' AND dt < '2024-07-01'` |
 
@@ -379,7 +380,7 @@ App 心跳 → Kafka → Flink CDC → HDFS
 
 ```
 优化前：200×90 = 18000 文件
-优化后：DISTRIBUTE BY → ~270 文件
+优化后：DISTRIBUTE BY → ~90 文件（每分区约 1 个）+ 合并任务进一步收敛
 ```
 
 ### 三案例对照总表
@@ -413,21 +414,26 @@ App 心跳 → Kafka → Flink CDC → HDFS
 # 1. 启动 Spark + Hive（本地最轻量）
 pyspark --master local[4] --conf spark.sql.warehouse.dir=/tmp/spark-warehouse
 
-# 2. Docker 完整 Hive
-docker run -d --name hive-metastore -p 9083:9083 -p 10000:10000 \
+# 2. Docker 启动 Metastore（仅元数据服务，端口 9083）
+docker run -d --name hive-metastore -p 9083:9083 \
   -e SERVICE_NAME=metastore apache/hive:4.0.0
 
-# 3. beeline 连接
+# 2b. Docker 启动 HiveServer2（含内嵌 Metastore，可 beeline 连接）
+docker run -d --name hiveserver2 -p 10000:10000 -p 10002:10002 \
+  -e SERVICE_NAME=hiveserver2 apache/hive:4.0.0
+
+# 3. beeline 连接（需先启动 hiveserver2 容器）
 beeline -u jdbc:hive2://localhost:10000/default
 
-# 4. 查看 HDFS 目录
-hdfs dfs -ls /data/warehouse/edu_demo.db/dwd_learning_detail/
+# 4. 查看数据目录（本地 Spark 内嵌 Hive 用下方路径；集群 HDFS 用 LOCATION 路径）
+ls /tmp/spark-warehouse/edu_demo.db/dwd_learning_detail/
+# hdfs dfs -ls /data/warehouse/ods/ods_student_heartbeat/
 
 # 5. 验证分区裁剪
 EXPLAIN SELECT * FROM dwd_learning_detail WHERE dt = '2024-06-01';
 
-# 6. 收集统计信息
-ANALYZE TABLE dwd_learning_detail COMPUTE STATISTICS FOR ALL COLUMNS;
+# 6. 收集统计信息（Hive 语法；Spark 用 FOR ALL COLUMNS）
+ANALYZE TABLE dwd_learning_detail COMPUTE STATISTICS FOR COLUMNS;
 ```
 
 ---
