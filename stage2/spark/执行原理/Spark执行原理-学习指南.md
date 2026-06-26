@@ -67,8 +67,8 @@ Parent         Child                  Parent          Child
 └──────┘      └──────┘               └──────┘       └──────┘
 
 map/filter/flatMap                   groupByKey/reduceByKey
-mapPartitions                        join(非broadcast)/sortByKey
-                                     repartition/coalesce
+mapPartitions/coalesce(缩分区)        join(非broadcast)/sortByKey
+                                     repartition
 ★ 同 Task 内 pipeline               ★ 必须 Shuffle → Stage 边界
 ```
 
