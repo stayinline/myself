@@ -37,4 +37,4 @@
 ## 关联章节
 
 - 前置：[stage2/hive](../hive/README.md)（Metastore、分区裁剪）
-- 后续：湖表专题、流批一体落地（Paimon/Iceberg 写入 OLAP）
+- 后续：[stage2/数据湖](../数据湖/README.md)（Iceberg/Paimon 写入 OLAP、流批一体落地）
